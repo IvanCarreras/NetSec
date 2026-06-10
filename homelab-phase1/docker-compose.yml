@@ -1,6 +1,11 @@
 # ============================================================
 #  HOMELAB PHASE 1 — Red base + Web targets + Reverse Proxy
-#  Redes: WAN | DMZ | INTERNAL | MGMT
+#  Redes: DMZ | INTERNAL | MGMT
+#
+#  Acceso externo (desde Windows / red local):
+#    DVWA       → http(s)://<IP_UBUNTU>
+#    Juice Shop → http(s)://<IP_UBUNTU>:8443
+#    Portainer  → http://<IP_UBUNTU>:9000
 # ============================================================
 
 version: '3.8'
@@ -10,28 +15,19 @@ version: '3.8'
 # ─────────────────────────────────────────────
 networks:
 
-  # Simula internet — zona del atacante
-  wan_net:
-    name: wan_net
-    driver: bridge
-    ipam:
-      driver: default
-      config:
-        - subnet: 192.168.100.0/24
-          gateway: 192.168.100.1
-
   # Zona pública — targets web + reverse proxy
+  # El proxy es el único nodo con puerto expuesto al host
   dmz_net:
     name: dmz_net
     driver: bridge
-    internal: true          # sin acceso directo al host
+    internal: true
     ipam:
       driver: default
       config:
         - subnet: 10.10.10.0/24
           gateway: 10.10.10.1
 
-  # Zona privada — SIEM (vacía en fase 1, preparada)
+  # Zona privada — SIEM (vacía en fase 1, preparada para fase 2)
   internal_net:
     name: internal_net
     driver: bridge
@@ -68,22 +64,25 @@ services:
 
   # ══════════════════════════════════════════
   #  REVERSE PROXY — Nginx
-  #  Único punto de entrada desde WAN → DMZ
-  #  IP WAN  : 192.168.100.10
-  #  IP DMZ  : 10.10.10.10
+  #  Único punto de entrada a la DMZ.
+  #  Escucha en 0.0.0.0 → accesible desde
+  #  Windows y cualquier equipo de la red local.
+  #
+  #  :80   → redirige a HTTPS
+  #  :443  → DVWA
+  #  :8443 → Juice Shop
   # ══════════════════════════════════════════
   nginx-rp:
     image: nginx:1.25-alpine
     container_name: nginx-rp
     hostname: nginx-rp
     networks:
-      wan_net:
-        ipv4_address: 192.168.100.10
       dmz_net:
         ipv4_address: 10.10.10.10
     ports:
-      - "80:80"           # HTTP — accesible desde el host
-      - "443:443"         # HTTPS — accesible desde el host
+      - "0.0.0.0:80:80"       # HTTP  — red local completa
+      - "0.0.0.0:443:443"     # HTTPS — DVWA
+      - "0.0.0.0:8443:8443"   # HTTPS — Juice Shop
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
@@ -107,7 +106,8 @@ services:
   # ══════════════════════════════════════════
   #  DVWA — Damn Vulnerable Web Application
   #  Target clásico: SQLi, XSS, CSRF, Upload
-  #  IP DMZ: 10.10.10.20
+  #  Acceso: https://<IP_UBUNTU>
+  #  Sin puerto expuesto al host — solo via proxy
   # ══════════════════════════════════════════
   dvwa:
     image: ghcr.io/digininja/dvwa:latest
@@ -141,8 +141,7 @@ services:
 
   # ──────────────────────────────────────────
   #  DVWA — Base de datos MySQL
-  #  Solo accesible desde DMZ (no expuesta)
-  #  IP DMZ: 10.10.10.21
+  #  Aislada en DMZ, sin ningún puerto expuesto
   # ──────────────────────────────────────────
   dvwa-db:
     image: mysql:8.0
@@ -173,7 +172,8 @@ services:
   # ══════════════════════════════════════════
   #  JUICE SHOP — OWASP Juice Shop
   #  Target moderno: API REST, JWT, IDOR, XSS
-  #  IP DMZ: 10.10.10.30
+  #  Acceso: https://<IP_UBUNTU>:8443
+  #  Sin puerto expuesto al host — solo via proxy
   # ══════════════════════════════════════════
   juiceshop:
     image: bkimminich/juice-shop:latest
@@ -197,39 +197,9 @@ services:
       - "homelab.app=juiceshop"
 
   # ══════════════════════════════════════════
-  #  KALI LINUX — Máquina atacante
-  #  Solo tiene acceso a WAN_NET
-  #  IP WAN: 192.168.100.20
-  # ══════════════════════════════════════════
-  kali:
-    image: kalilinux/kali-rolling:latest
-    container_name: kali-attacker
-    hostname: kali-attacker
-    networks:
-      wan_net:
-        ipv4_address: 192.168.100.20
-    stdin_open: true
-    tty: true
-    command: >
-      bash -c "
-        apt-get update -qq &&
-        apt-get install -y -qq
-          nmap curl wget nikto sqlmap
-          hydra gobuster wfuzz
-          net-tools iputils-ping dnsutils
-          python3 python3-pip 2>/dev/null;
-        echo '[*] Kali listo. Conecta con: docker exec -it kali-attacker bash';
-        tail -f /dev/null
-      "
-    restart: unless-stopped
-    labels:
-      - "homelab.zone=wan"
-      - "homelab.role=attacker"
-
-  # ══════════════════════════════════════════
   #  PORTAINER — Gestión Docker via GUI
-  #  Solo accesible desde MGMT_NET
-  #  IP MGMT: 10.10.30.10  |  Host: :9000
+  #  Acceso: http://<IP_UBUNTU>:9000
+  #  Expuesto directamente (gestión admin)
   # ══════════════════════════════════════════
   portainer:
     image: portainer/portainer-ce:latest
@@ -239,7 +209,7 @@ services:
       mgmt_net:
         ipv4_address: 10.10.30.10
     ports:
-      - "9000:9000"       # Solo para acceso desde el host (admin)
+      - "0.0.0.0:9000:9000"   # Accesible desde red local
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - portainer_data:/data
