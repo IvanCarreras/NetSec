@@ -1,0 +1,10 @@
+# logstash/pipelines.yml
+# Define qué pipelines ejecutar
+
+- pipeline.id: syslog-pipeline
+  path.config: "/usr/share/logstash/pipeline/01-syslog.conf"
+  pipeline.workers: 2
+
+- pipeline.id: json-pipeline
+  path.config: "/usr/share/logstash/pipeline/02-json.conf"
+  pipeline.workers: 2

@@ -1,0 +1,61 @@
+# filebeat/filebeat.yml
+# Configuración de Filebeat para recolectar logs
+
+filebeat.inputs:
+  # Logs de sistema general
+  - type: log
+    enabled: true
+    paths:
+      - /var/log/syslog
+      - /var/log/auth.log
+      - /var/log/kern.log
+    fields:
+      log_source: "system"
+      os: "linux"
+    multiline.pattern: '^\['
+    multiline.negate: true
+    multiline.match: after
+
+  # Logs de Docker
+  - type: log
+    enabled: true
+    paths:
+      - /var/log/docker.log
+    fields:
+      log_source: "docker"
+      container: true
+    multiline.pattern: '^\['
+    multiline.negate: true
+    multiline.match: after
+
+# Procesadores
+processors:
+  # Agregar información del host
+  - add_host_metadata:
+      when.not.regexp:
+        system.audit.message: "^.*"
+  
+  # Agregar información del contenedor Docker
+  - add_docker_metadata:
+      host: "unix:///var/run/docker.sock"
+  
+  # Agregar campos de procesamiento
+  - add_fields:
+      target: agent
+      fields:
+        type: "filebeat"
+        environment: "homelab"
+
+# Output: Enviar a Elasticsearch directamente
+output.elasticsearch:
+  hosts: ["elasticsearch:9200"]
+  index: "filebeat-%{[agent.version]}-%{+YYYY.MM.dd}"
+
+# Logging
+logging.level: info
+logging.to_files: true
+logging.files:
+  path: /var/log/filebeat
+  name: filebeat
+  keepfiles: 7
+  permissions: 0644

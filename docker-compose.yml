@@ -1,0 +1,134 @@
+version: '3.9'
+
+services:
+  # ========================================
+  # ELASTICSEARCH - Motor de búsqueda & storage
+  # ========================================
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: minisoc-elasticsearch
+    restart: unless-stopped
+    environment:
+      - node.name=es-node-1
+      - cluster.name=minisoc-cluster
+      - discovery.type=single-node
+      
+      # Seguridad deshabilitada para lab local (SOLO PARA LAB!)
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+      
+      # Rendimiento
+      - ES_JAVA_OPTS=-Xms2g -Xmx2g
+      - indices.memory.index_buffer_size=30%
+      
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+      - elasticsearch-logs:/usr/share/elasticsearch/logs
+    networks:
+      - minisoc-network
+    healthcheck:
+      test: curl -s http://elasticsearch:9200 >/dev/null || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ========================================
+  # KIBANA - Visualización & búsqueda
+  # ========================================
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    container_name: minisoc-kibana
+    restart: unless-stopped
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=elastic
+      - ELASTICSEARCH_PASSWORD=changeme
+      # Para lab: sin autenticación
+      - xpack.security.enabled=false
+    ports:
+      - "5601:5601"
+    networks:
+      - minisoc-network
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: curl -s http://kibana:5601/api/status >/dev/null || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ========================================
+  # LOGSTASH - Procesamiento & enriquecimiento
+  # ========================================
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.11.0
+    container_name: minisoc-logstash
+    restart: unless-stopped
+    environment:
+      - "ELASTICSEARCH_HOSTS=http://elasticsearch:9200"
+      - "ELASTICSEARCH_USERNAME=elastic"
+      - "ELASTICSEARCH_PASSWORD=changeme"
+      - "LS_JAVA_OPTS=-Xmx512m -Xms512m"
+    volumes:
+      # Pipeline de Logstash
+      - ./logstash/pipelines.yml:/usr/share/logstash/config/pipelines.yml:ro
+      - ./logstash/conf.d/:/usr/share/logstash/pipeline/:ro
+      
+      # Para recibir logs del host (opcional)
+      - /var/log:/var/log:ro
+    ports:
+      # Syslog TCP/UDP (para Windows Sysmon, Suricata, etc.)
+      - "5000:5000/tcp"
+      - "5000:5000/udp"
+      
+      # Beats (Filebeat, Metricbeat)
+      - "5044:5044/tcp"
+      
+      # HTTP input (para custom logs)
+      - "8080:8080/tcp"
+    networks:
+      - minisoc-network
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: curl -s http://logstash:9600/ >/dev/null || exit 1
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ========================================
+  # FILEBEAT - Recolector de logs (opcional)
+  # ========================================
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.11.0
+    container_name: minisoc-filebeat
+    restart: unless-stopped
+    user: root
+    volumes:
+      - ./filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/log:/var/log:ro
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    networks:
+      - minisoc-network
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    command: filebeat -e -strict.perms=false
+
+networks:
+  minisoc-network:
+    driver: bridge
+
+volumes:
+  elasticsearch-data:
+    driver: local
+  elasticsearch-logs:
+    driver: local
